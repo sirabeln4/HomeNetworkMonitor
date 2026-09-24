@@ -1,6 +1,8 @@
 using System.Collections.ObjectModel;
 using System.Windows;
 using System.Windows.Controls;
+using System.ComponentModel;
+using System.Windows.Data;
 using NetworkMonitor.Models;
 using NetworkMonitor.Services;
 
@@ -10,6 +12,7 @@ public partial class MainWindow : Window
 {
     private readonly INetworkScanner scanner = new NetworkScanner();
     private readonly ObservableCollection<NetworkDevice> devices = new();
+    private ICollectionView? devicesView;
     private readonly DeviceRepository repository = new();
     private readonly TrayNotifier notifier = new();
     private readonly EmailNotifier emailNotifier = new();
@@ -19,6 +22,11 @@ public partial class MainWindow : Window
     {
         InitializeComponent();
         DevicesGrid.ItemsSource = devices;
+        var view = CollectionViewSource.GetDefaultView(devices);
+        devicesView = view;
+        view.SortDescriptions.Add(new SortDescription(nameof(NetworkDevice.DeviceType), ListSortDirection.Ascending));
+        view.SortDescriptions.Add(new SortDescription(nameof(NetworkDevice.DisplayName), ListSortDirection.Ascending));
+        view.Filter = item => ShowMulticastCheckBox.IsChecked == true || !IsMulticast((item as NetworkDevice)?.IpAddress);
         DevicesGrid.SelectionChanged += (_, _) => LoadSelectedDetails();
         foreach (var device in repository.LoadAll()) devices.Add(device);
         UpdateCounts();
@@ -81,5 +89,14 @@ public partial class MainWindow : Window
     {
         TotalText.Text = devices.Count.ToString(); OnlineText.Text = devices.Count(d => d.IsOnline).ToString();
         OfflineText.Text = devices.Count(d => !d.IsOnline).ToString(); UnknownText.Text = devices.Count(d => d.IsNew || d.DisplayName == "Unknown device").ToString();
+    }
+
+    private void DisplayFilterChanged(object sender, RoutedEventArgs e) => devicesView?.Refresh();
+
+    private static bool IsMulticast(string? address)
+    {
+        if (!System.Net.IPAddress.TryParse(address, out var ip)) return false;
+        var first = ip.GetAddressBytes()[0];
+        return first >= 224 && first <= 239;
     }
 }
