@@ -1,0 +1,9 @@
+bin/
+obj/
+.vs/
+*.user
+*.suo
+
+# Local database and email credentials
+email-settings.json
+network-monitor.db

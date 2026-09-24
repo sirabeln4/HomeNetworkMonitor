@@ -1,0 +1,24 @@
+<Window x:Class="NetworkMonitor.MainWindow" xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation" xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml" Title="Home Network Monitor" Height="650" Width="1050" WindowStartupLocation="CenterScreen">
+  <DockPanel Margin="18">
+    <StackPanel DockPanel.Dock="Top">
+      <TextBlock Text="Home Network Monitor" FontSize="28" FontWeight="Bold"/>
+      <TextBlock Text="Nest Wifi Pro network • light monitoring every 15 minutes" Foreground="Gray"/>
+      <UniformGrid Columns="4" Margin="0,18,0,12">
+        <Border Background="#E8F1FF" Padding="12" Margin="4"><StackPanel><TextBlock Text="Total devices"/><TextBlock x:Name="TotalText" Text="0" FontSize="25" FontWeight="Bold"/></StackPanel></Border>
+        <Border Background="#E9F8EE" Padding="12" Margin="4"><StackPanel><TextBlock Text="Online"/><TextBlock x:Name="OnlineText" Text="0" FontSize="25" FontWeight="Bold"/></StackPanel></Border>
+        <Border Background="#FFF4DD" Padding="12" Margin="4"><StackPanel><TextBlock Text="Offline"/><TextBlock x:Name="OfflineText" Text="0" FontSize="25" FontWeight="Bold"/></StackPanel></Border>
+        <Border Background="#FFE7E7" Padding="12" Margin="4"><StackPanel><TextBlock Text="Unknown / new"/><TextBlock x:Name="UnknownText" Text="0" FontSize="25" FontWeight="Bold"/></StackPanel></Border>
+      </UniformGrid>
+      <StackPanel Orientation="Horizontal" Margin="4,0,4,12"><Button x:Name="ScanButton" Content="Scan now" Padding="18,8" Click="ScanButton_Click"/><TextBlock x:Name="StatusText" Text="Ready" VerticalAlignment="Center" Margin="14,4"/></StackPanel><TextBlock Text="Recent changes" FontWeight="Bold" Margin="4,0,4,2"/><TextBlock x:Name="RecentChangesText" Text="No changes recorded yet." Foreground="Gray" Margin="4,0,4,10"/>
+    </StackPanel>
+    <GroupBox DockPanel.Dock="Bottom" Header="Selected device" Margin="0,12,0,0" Padding="8">
+      <Grid><Grid.ColumnDefinitions><ColumnDefinition Width="100"/><ColumnDefinition Width="220"/><ColumnDefinition Width="100"/><ColumnDefinition Width="220"/><ColumnDefinition Width="100"/><ColumnDefinition Width="*"/></Grid.ColumnDefinitions><Grid.RowDefinitions><RowDefinition/><RowDefinition/></Grid.RowDefinitions>
+        <TextBlock Text="Name" Grid.Column="0"/><TextBox x:Name="NameBox" Grid.Column="1" Margin="4"/><TextBlock Text="Type" Grid.Column="2"/><TextBox x:Name="TypeBox" Grid.Column="3" Margin="4"/><TextBlock Text="Owner" Grid.Column="4"/><TextBox x:Name="OwnerBox" Grid.Column="5" Margin="4"/>
+        <TextBlock Text="Notes" Grid.Row="1"/><TextBox x:Name="NotesBox" Grid.Row="1" Grid.Column="1" Grid.ColumnSpan="2" Margin="4"/><ComboBox x:Name="IdentityModeBox" Grid.Row="1" Grid.Column="3" Margin="4"><ComboBoxItem Content="Automatic"/><ComboBoxItem Content="Track by IP"/><ComboBoxItem Content="Track by MAC"/></ComboBox><Button Content="Save details" Grid.Row="1" Grid.Column="5" Width="110" HorizontalAlignment="Right" Click="SaveDetails_Click"/>
+      </Grid>
+    </GroupBox>
+    <DataGrid x:Name="DevicesGrid" AutoGenerateColumns="False" IsReadOnly="True" CanUserSortColumns="True">
+      <DataGrid.Columns><DataGridTextColumn Header="Name" Binding="{Binding DisplayName}" Width="2*"/><DataGridTextColumn Header="IP address" Binding="{Binding IpAddress}" Width="*"/><DataGridTextColumn Header="MAC address" Binding="{Binding MacAddress}" Width="1.5*"/><DataGridTextColumn Header="Host name" Binding="{Binding Hostname}" Width="*"/><DataGridTextColumn Header="Manufacturer" Binding="{Binding Manufacturer}" Width="1.5*"/><DataGridTextColumn Header="Services" Binding="{Binding DetectedServices}" Width="2*"/><DataGridCheckBoxColumn Header="Online" Binding="{Binding IsOnline}" Width="80"/><DataGridTextColumn Header="First seen" Binding="{Binding FirstSeenUtc, StringFormat={}{0:g}}" Width="1.5*"/><DataGridTextColumn Header="Last seen" Binding="{Binding LastSeenUtc, StringFormat={}{0:g}}" Width="1.5*"/></DataGrid.Columns>
+    </DataGrid>
+  </DockPanel>
+</Window>
