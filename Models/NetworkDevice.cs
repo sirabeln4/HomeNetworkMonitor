@@ -16,4 +16,5 @@ public sealed class NetworkDevice
     public string Notes { get; set; } = "";
     public string DetectedServices { get; set; } = "";
     public string IdentityMode { get; set; } = "Automatic";
+    public string ManagedBy { get; set; } = "";
 }
