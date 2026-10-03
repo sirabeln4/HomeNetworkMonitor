@@ -50,12 +50,13 @@ public partial class MainWindow : Window
         if (DevicesGrid.SelectedItem is not NetworkDevice d)
         {
             NameBox.Clear(); TypeBox.Clear(); OwnerBox.Clear(); NotesBox.Clear(); ManagedByBox.Text = "";
-            SaveButton.IsEnabled = false;
+            SaveButton.IsEnabled = false; ForgetButton.IsEnabled = false;
             return;
         }
         NameBox.Text = d.DisplayName; TypeBox.Text = d.DeviceType; OwnerBox.Text = d.Owner; NotesBox.Text = d.Notes; ManagedByBox.Text = d.ManagedBy;
         IdentityModeBox.SelectedItem = IdentityModeBox.Items.OfType<ComboBoxItem>().FirstOrDefault(item => item.Content?.ToString() == d.IdentityMode) ?? IdentityModeBox.Items[0];
         SaveButton.IsEnabled = false;
+        ForgetButton.IsEnabled = true;
     }
 
     private void SaveDetails_Click(object sender, RoutedEventArgs e)
@@ -68,6 +69,14 @@ public partial class MainWindow : Window
             SaveButton.IsEnabled = false;
         }
         catch (Exception ex) { Console.WriteLine($"[{DateTime.Now:HH:mm:ss}] [UI] Save failed: {ex}"); StatusText.Text = $"Save failed: {ex.Message}"; }
+    }
+
+    private void ForgetDevice_Click(object sender, RoutedEventArgs e)
+    {
+        if (DevicesGrid.SelectedItem is not NetworkDevice device) return;
+        var answer = System.Windows.MessageBox.Show($"Forget {device.DisplayName} at {device.IpAddress}? The next scan will rediscover it as new.", "Forget device", System.Windows.MessageBoxButton.YesNo, System.Windows.MessageBoxImage.Question);
+        if (answer != System.Windows.MessageBoxResult.Yes) return;
+        repository.ForgetDevice(device); devices.Remove(device); DevicesGrid.SelectedItem = null; StatusText.Text = "Device forgotten. Run a scan to rediscover it.";
     }
 
     private void EditorChanged(object sender, RoutedEventArgs e)

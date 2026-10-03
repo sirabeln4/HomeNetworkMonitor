@@ -89,6 +89,15 @@ public sealed class DeviceRepository
         transaction.Commit();
     }
 
+    public void ForgetDevice(NetworkDevice device)
+    {
+        using var connection = Open();
+        using var command = connection.CreateCommand();
+        command.CommandText = "DELETE FROM Devices WHERE DeviceKey = $key OR IpAddress = $ip";
+        command.Parameters.AddWithValue("$key", Key(device)); command.Parameters.AddWithValue("$ip", device.IpAddress);
+        command.ExecuteNonQuery();
+    }
+
     public List<DeviceChange> RecordScan(IReadOnlyList<NetworkDevice> scanned)
     {
         var previous = LoadAll().ToDictionary(Key); var now = DateTime.UtcNow; var changes = new List<DeviceChange>();
