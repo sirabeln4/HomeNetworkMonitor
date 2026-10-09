@@ -1,2 +1,2 @@
 namespace NetworkMonitor.Models;
-public sealed class DeviceChange { public DateTime OccurredUtc { get; init; } public string DeviceKey { get; init; } = ""; public string Description { get; init; } = ""; }
+public sealed class DeviceChange { public DateTime OccurredUtc { get; init; } public DateTime OccurredLocal => OccurredUtc.ToLocalTime(); public string DeviceKey { get; init; } = ""; public string IpAddress { get; init; } = ""; public string MacAddress { get; init; } = ""; public string DeviceName { get; init; } = ""; public string Description { get; init; } = ""; }

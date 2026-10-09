@@ -20,10 +20,12 @@ public partial class MainWindow : Window
     private readonly TrayNotifier notifier = new();
     private readonly EmailNotifier emailNotifier = new();
     private readonly System.Windows.Threading.DispatcherTimer timer;
+    private readonly string advancedSortPath = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "HomeNetworkMonitor", "advanced-sort.json");
 
     public MainWindow()
     {
         InitializeComponent();
+        SetDefaultAdvancedSort();
         ManagedByBox.AddHandler(System.Windows.Controls.TextBox.TextChangedEvent, new TextChangedEventHandler((sender, args) => EditorChanged(sender, args)));
         ManagedByBox.AddHandler(System.Windows.Controls.TextBox.TextChangedEvent, new TextChangedEventHandler((sender, args) => UpdateAddServiceState()));
         var optionsPath = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "HomeNetworkMonitor", "managed-by-options.json");
@@ -34,6 +36,8 @@ public partial class MainWindow : Window
         devicesView = view;
         view.SortDescriptions.Add(new SortDescription(nameof(NetworkDevice.DeviceType), ListSortDirection.Ascending));
         view.SortDescriptions.Add(new SortDescription(nameof(NetworkDevice.DisplayName), ListSortDirection.Ascending));
+        LoadAdvancedSort();
+        ApplyAdvancedSort_Click(this, new RoutedEventArgs());
         view.Filter = item => ShowMulticastCheckBox.IsChecked == true || !IsMulticast((item as NetworkDevice)?.IpAddress);
         DevicesGrid.SelectionChanged += (_, _) => LoadSelectedDetails();
         foreach (var device in repository.LoadAll()) devices.Add(device);
@@ -64,11 +68,23 @@ public partial class MainWindow : Window
         if (DevicesGrid.SelectedItem is not NetworkDevice d) return;
         try
         {
-            d.DisplayName = string.IsNullOrWhiteSpace(NameBox.Text) ? "Unknown device" : NameBox.Text.Trim(); d.DeviceType = TypeBox.Text.Trim(); d.Owner = OwnerBox.Text.Trim(); d.Notes = NotesBox.Text.Trim(); d.ManagedBy = ManagedByBox.Text.Trim(); d.IdentityMode = (IdentityModeBox.SelectedItem as ComboBoxItem)?.Content?.ToString() ?? "Automatic"; d.IsNew = false;
-            repository.Save(devices); DevicesGrid.Items.Refresh(); UpdateCounts(); StatusText.Text = "Device details saved.";
+            var newName = string.IsNullOrWhiteSpace(NameBox.Text) ? "Unknown device" : NameBox.Text.Trim();
+            var newType = TypeBox.Text.Trim(); var newOwner = OwnerBox.Text.Trim(); var newNotes = NotesBox.Text.Trim(); var newManagedBy = ManagedByBox.Text.Trim();
+            var newIdentityMode = (IdentityModeBox.SelectedItem as ComboBoxItem)?.Content?.ToString() ?? "Automatic";
+            var edits = new List<(string Field, string OldValue, string NewValue)>();
+            AddDetailEdit(edits, "Name", d.DisplayName, newName); AddDetailEdit(edits, "Type", d.DeviceType, newType);
+            AddDetailEdit(edits, "Managed by", d.ManagedBy, newManagedBy); AddDetailEdit(edits, "Owner", d.Owner, newOwner);
+            AddDetailEdit(edits, "Notes", d.Notes, newNotes); AddDetailEdit(edits, "Identity mode", d.IdentityMode, newIdentityMode);
+            d.DisplayName = newName; d.DeviceType = newType; d.Owner = newOwner; d.Notes = newNotes; d.ManagedBy = newManagedBy; d.IdentityMode = newIdentityMode; d.IsNew = false;
+            repository.Save(devices); repository.RecordDetailsUpdated(d, edits); DevicesGrid.Items.Refresh(); UpdateCounts(); StatusText.Text = "Device details saved.";
             SaveButton.IsEnabled = false;
         }
         catch (Exception ex) { Console.WriteLine($"[{DateTime.Now:HH:mm:ss}] [UI] Save failed: {ex}"); StatusText.Text = $"Save failed: {ex.Message}"; }
+    }
+
+    private static void AddDetailEdit(List<(string Field, string OldValue, string NewValue)> edits, string field, string oldValue, string newValue)
+    {
+        if (!string.Equals(oldValue, newValue, StringComparison.Ordinal)) edits.Add((field, oldValue, newValue));
     }
 
     private void ForgetDevice_Click(object sender, RoutedEventArgs e)
@@ -131,16 +147,59 @@ public partial class MainWindow : Window
 
     private void AdvancedSort_Click(object sender, RoutedEventArgs e) => SortPanel.Visibility = SortPanel.Visibility == Visibility.Visible ? Visibility.Collapsed : Visibility.Visible;
 
+    private void ViewLog_Click(object sender, RoutedEventArgs e) => new ViewLogWindow(repository) { Owner = this }.ShowDialog();
+
     private void ApplyAdvancedSort_Click(object sender, RoutedEventArgs e)
     {
         if (devicesView is null) return;
         var propertyMap = new Dictionary<string, string> { ["Type"] = nameof(NetworkDevice.DeviceType), ["Name"] = nameof(NetworkDevice.DisplayName), ["Managed by"] = nameof(NetworkDevice.ManagedBy), ["IP address"] = nameof(NetworkDevice.IpAddress), ["Manufacturer"] = nameof(NetworkDevice.Manufacturer), ["First seen"] = nameof(NetworkDevice.FirstSeenUtc), ["Last seen"] = nameof(NetworkDevice.LastSeenUtc) };
         devicesView.SortDescriptions.Clear(); AddSort(propertyMap, PrimarySortBox, PrimaryDirectionBox); AddSort(propertyMap, SecondarySortBox, SecondaryDirectionBox); AddSort(propertyMap, ThirdSortBox, ThirdDirectionBox); devicesView.Refresh();
+        var settings = new[] { MakeSortRule(PrimarySortBox, PrimaryDirectionBox), MakeSortRule(SecondarySortBox, SecondaryDirectionBox), MakeSortRule(ThirdSortBox, ThirdDirectionBox) };
+        Directory.CreateDirectory(Path.GetDirectoryName(advancedSortPath)!);
+        File.WriteAllText(advancedSortPath, JsonSerializer.Serialize(settings));
+        StatusText.Text = "Advanced sort applied and saved.";
+    }
+
+    private sealed record SortRule(string Column, string Direction);
+
+    private static SortRule MakeSortRule(System.Windows.Controls.ComboBox column, System.Windows.Controls.ComboBox direction) => new((column.SelectedItem as ComboBoxItem)?.Content?.ToString() ?? "None", (direction.SelectedItem as ComboBoxItem)?.Content?.ToString() ?? "Ascending");
+
+    private void SetDefaultAdvancedSort()
+    {
+        SelectSortOption(PrimarySortBox, "Type"); SelectSortOption(PrimaryDirectionBox, "Ascending");
+        SelectSortOption(SecondarySortBox, "Name"); SelectSortOption(SecondaryDirectionBox, "Ascending");
+        SelectSortOption(ThirdSortBox, "None"); SelectSortOption(ThirdDirectionBox, "Ascending");
+    }
+
+    private void LoadAdvancedSort()
+    {
+        if (!File.Exists(advancedSortPath)) return;
+        try
+        {
+            var rules = JsonSerializer.Deserialize<SortRule[]>(File.ReadAllText(advancedSortPath));
+            if (rules is null || rules.Length < 3) return;
+            SelectSortOption(PrimarySortBox, rules[0].Column); SelectSortOption(PrimaryDirectionBox, rules[0].Direction);
+            SelectSortOption(SecondarySortBox, rules[1].Column); SelectSortOption(SecondaryDirectionBox, rules[1].Direction);
+            SelectSortOption(ThirdSortBox, rules[2].Column); SelectSortOption(ThirdDirectionBox, rules[2].Direction);
+        }
+        catch (Exception ex) { Console.WriteLine($"[{DateTime.Now:HH:mm:ss}] [UI] Could not load advanced sort settings: {ex.Message}"); }
+    }
+
+    private static void SelectSortOption(System.Windows.Controls.ComboBox box, string content)
+    {
+        box.SelectedItem = box.Items.OfType<ComboBoxItem>().FirstOrDefault(item => item.Content?.ToString() == content);
+    }
+
+    private void ResetAdvancedSort_Click(object sender, RoutedEventArgs e)
+    {
+        SetDefaultAdvancedSort();
+        ApplyAdvancedSort_Click(sender, e);
+        StatusText.Text = "Advanced sort reset to Type, then Name.";
     }
 
     private void AddSort(IReadOnlyDictionary<string, string> map, System.Windows.Controls.ComboBox column, System.Windows.Controls.ComboBox direction)
     {
-        var name = (column.SelectedItem as ComboBoxItem)?.Content?.ToString(); if (name is null || !map.TryGetValue(name, out var property)) return;
+        var name = (column.SelectedItem as ComboBoxItem)?.Content?.ToString(); if (name is null || name == "None" || !map.TryGetValue(name, out var property)) return;
         devicesView!.SortDescriptions.Add(new SortDescription(property, (direction.SelectedItem as ComboBoxItem)?.Content?.ToString() == "Descending" ? ListSortDirection.Descending : ListSortDirection.Ascending));
     }
 

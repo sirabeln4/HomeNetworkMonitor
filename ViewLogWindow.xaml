@@ -1,0 +1,18 @@
+<Window x:Class="NetworkMonitor.ViewLogWindow" xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation" xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml" Title="Device change log" Height="560" Width="1000" WindowStartupLocation="CenterOwner">
+  <DockPanel Margin="14">
+    <StackPanel DockPanel.Dock="Top" Orientation="Horizontal" Margin="0,0,0,10">
+      <TextBlock Text="Search address, MAC, name, or event:" VerticalAlignment="Center" Margin="0,0,8,0"/>
+      <TextBox x:Name="SearchBox" Width="360" Height="28" VerticalContentAlignment="Center" TextChanged="SearchBox_TextChanged"/>
+      <TextBlock x:Name="CountText" Margin="12,0,0,0" VerticalAlignment="Center" Foreground="Gray"/>
+    </StackPanel>
+    <DataGrid x:Name="ChangesGrid" AutoGenerateColumns="False" IsReadOnly="True" CanUserSortColumns="True" EnableRowVirtualization="True">
+      <DataGrid.Columns>
+        <DataGridTextColumn Header="Time (local)" Binding="{Binding OccurredLocal, StringFormat={}{0:G}}" Width="210"/>
+        <DataGridTextColumn Header="IP address" Binding="{Binding IpAddress}" Width="125"/>
+        <DataGridTextColumn Header="MAC address" Binding="{Binding MacAddress}" Width="145"/>
+        <DataGridTextColumn Header="Saved name (current)" Binding="{Binding DeviceName}" Width="170"/>
+        <DataGridTextColumn Header="Event" Binding="{Binding Description}" Width="*"/>
+      </DataGrid.Columns>
+    </DataGrid>
+  </DockPanel>
+</Window>
