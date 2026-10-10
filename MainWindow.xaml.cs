@@ -38,7 +38,7 @@ public partial class MainWindow : Window
         view.SortDescriptions.Add(new SortDescription(nameof(NetworkDevice.DisplayName), ListSortDirection.Ascending));
         LoadAdvancedSort();
         ApplyAdvancedSort_Click(this, new RoutedEventArgs());
-        view.Filter = item => ShowMulticastCheckBox.IsChecked == true || !IsMulticast((item as NetworkDevice)?.IpAddress);
+        view.Filter = item => IsVisibleDevice(item as NetworkDevice);
         DevicesGrid.SelectionChanged += (_, _) => LoadSelectedDetails();
         foreach (var device in repository.LoadAll()) devices.Add(device);
         UpdateCounts();
@@ -139,11 +139,39 @@ public partial class MainWindow : Window
 
     private void UpdateCounts()
     {
-        TotalText.Text = devices.Count.ToString(); OnlineText.Text = devices.Count(d => d.IsOnline).ToString();
-        OfflineText.Text = devices.Count(d => !d.IsOnline).ToString(); UnknownText.Text = devices.Count(d => d.IsNew || d.DisplayName == "Unknown device").ToString();
+        var visibleDevices = devices.Where(IsVisibleDevice).ToList();
+        TotalText.Text = visibleDevices.Count.ToString(); OnlineText.Text = visibleDevices.Count(d => d.IsOnline).ToString();
+        OfflineText.Text = visibleDevices.Count(d => !d.IsOnline).ToString(); UnknownText.Text = visibleDevices.Count(d => d.IsNew || d.DisplayName == "Unknown device").ToString();
     }
 
-    private void DisplayFilterChanged(object sender, RoutedEventArgs e) => devicesView?.Refresh();
+    private void DisplayFilterChanged(object sender, RoutedEventArgs e)
+    {
+        devicesView?.Refresh();
+        if (TotalText is not null) UpdateCounts();
+    }
+
+    private bool IsVisibleDevice(NetworkDevice? device)
+    {
+        if (device is null) return false;
+        if (ShowMulticastCheckBox.IsChecked != true && IsMulticast(device.IpAddress)) return false;
+        if (ShowVirtualCheckBox.IsChecked != true && IsLikelyWslOrHyperVDevice(device)) return false;
+        return true;
+    }
+
+    private static bool IsLikelyWslOrHyperVDevice(NetworkDevice device)
+    {
+        if (!System.Net.IPAddress.TryParse(device.IpAddress, out var address)) return false;
+        var bytes = address.GetAddressBytes();
+        if (bytes.Length != 4 || bytes[0] != 172 || bytes[1] < 16 || bytes[1] > 31) return false;
+        if (bytes[0] == 172 && bytes[1] == 31 && bytes[2] == 0 && bytes[3] == 1) return true;
+        var compactMac = new string(device.MacAddress.Where(Uri.IsHexDigit).ToArray());
+        var virtualMac = compactMac.StartsWith("00155D", StringComparison.OrdinalIgnoreCase);
+        var virtualDescription = $"{device.Hostname} {device.DisplayName} {device.Manufacturer}";
+        var virtualName = virtualDescription.Contains("WSL", StringComparison.OrdinalIgnoreCase)
+            || virtualDescription.Contains("Hyper-V", StringComparison.OrdinalIgnoreCase)
+            || virtualDescription.Contains("vEthernet", StringComparison.OrdinalIgnoreCase);
+        return virtualMac || virtualName;
+    }
 
     private void AdvancedSort_Click(object sender, RoutedEventArgs e) => SortPanel.Visibility = SortPanel.Visibility == Visibility.Visible ? Visibility.Collapsed : Visibility.Visible;
 
