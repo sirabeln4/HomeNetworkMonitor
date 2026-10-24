@@ -57,7 +57,7 @@ public sealed class DeviceRepository
             Notes = reader.GetString(11), DetectedServices = reader.GetString(12), IdentityMode = reader.GetString(13), ManagedBy = reader.GetString(14)
         });
         if (!deduplicateByIp) return result;
-        return result.Where(d => !d.IpAddress.EndsWith(".255", StringComparison.Ordinal) && d.IpAddress != "255.255.255.255").GroupBy(d => d.IpAddress).Select(group =>
+        return result.Where(d => !d.IpAddress.EndsWith(".255", StringComparison.Ordinal) && d.IpAddress != "255.255.255.255").GroupBy(d => string.IsNullOrWhiteSpace(d.IpAddress) ? Key(d) : d.IpAddress).Select(group =>
         {
             var preferred = group.OrderByDescending(d => d.IsOnline).ThenByDescending(d => !string.IsNullOrWhiteSpace(d.MacAddress)).First();
             foreach (var duplicate in group.Where(d => !ReferenceEquals(d, preferred)))
@@ -99,7 +99,7 @@ public sealed class DeviceRepository
     {
         using var connection = Open();
         using var command = connection.CreateCommand();
-        command.CommandText = "DELETE FROM Devices WHERE DeviceKey = $key OR IpAddress = $ip";
+        command.CommandText = "DELETE FROM Devices WHERE DeviceKey = $key OR ($ip <> '' AND IpAddress = $ip)";
         command.Parameters.AddWithValue("$key", Key(device)); command.Parameters.AddWithValue("$ip", device.IpAddress);
         command.ExecuteNonQuery();
     }
@@ -136,7 +136,69 @@ public sealed class DeviceRepository
             var incomingMacAlreadyKnown = previous.Values.Any(old => old.MacAddress.Equals(item.MacAddress, StringComparison.OrdinalIgnoreCase));
             if (oldAtIp is not null && !incomingMacAlreadyKnown) changes.Add(new() { OccurredUtc = now, DeviceKey = Key(item), Description = $"MAC changed at {item.IpAddress}: {oldAtIp.MacAddress} -> {item.MacAddress}" });
         }
-        foreach (var device in scanned) { var priorIp = previous.Values.FirstOrDefault(old => !string.IsNullOrWhiteSpace(device.MacAddress) && old.MacAddress.Equals(device.MacAddress, StringComparison.OrdinalIgnoreCase) && old.IpAddress != device.IpAddress); if (priorIp is not null) { device.DisplayName = priorIp.DisplayName; device.DeviceType = priorIp.DeviceType; device.Owner = priorIp.Owner; device.Notes = priorIp.Notes; device.FirstSeenUtc = priorIp.FirstSeenUtc; device.IdentityMode = priorIp.IdentityMode; device.ManagedBy = priorIp.ManagedBy; changes.Add(new() { OccurredUtc = now, DeviceKey = Key(device), Description = $"Device moved from {priorIp.IpAddress} to {device.IpAddress}" }); previous.Remove(Key(priorIp)); } var alreadyKnown = previous.ContainsKey(Key(device)); var sameIpDifferentMac = alreadyKnown ? null : previous.Values.FirstOrDefault(old => old.IpAddress == device.IpAddress && old.IdentityMode != "Track by IP" && !string.IsNullOrWhiteSpace(old.MacAddress) && !string.IsNullOrWhiteSpace(device.MacAddress) && !old.MacAddress.Equals(device.MacAddress, StringComparison.OrdinalIgnoreCase)); if (sameIpDifferentMac is not null) { sameIpDifferentMac.DisplayName = "Unknown device"; sameIpDifferentMac.DeviceType = "Unknown"; sameIpDifferentMac.Owner = ""; sameIpDifferentMac.Notes = ""; sameIpDifferentMac.IsOnline = false; changes.Add(new() { OccurredUtc = now, DeviceKey = Key(device), Description = $"New device at {device.IpAddress}; previous MAC was {sameIpDifferentMac.MacAddress}" }); device.DisplayName = "Unknown device"; device.DeviceType = "Unknown"; device.Owner = ""; device.Notes = ""; device.IsNew = true; device.FirstSeenUtc = now; device.LastSeenUtc = now; } else { var key = Key(device); device.LastSeenUtc = now; var old = previous.TryGetValue(key, out var exact) ? exact : previous.Values.FirstOrDefault(candidate => candidate.IpAddress == device.IpAddress && candidate.IdentityMode == "Track by IP"); if (old is null) changes.Add(new() { OccurredUtc = now, DeviceKey = key, Description = $"First seen: {device.IpAddress}" }); else { if (!old.IsOnline) changes.Add(new() { OccurredUtc = now, DeviceKey = key, Description = $"Came online: {device.IpAddress}" }); if (old.IpAddress != device.IpAddress) changes.Add(new() { OccurredUtc = now, DeviceKey = key, Description = $"IP changed: {old.IpAddress} -> {device.IpAddress}" }); if (!string.IsNullOrWhiteSpace(old.DetectedServices) && !string.IsNullOrWhiteSpace(device.DetectedServices) && old.DetectedServices != device.DetectedServices) changes.Add(new() { OccurredUtc = now, DeviceKey = key, Description = $"Services changed: {device.DetectedServices}" }); device.DisplayName = old.DisplayName; device.DeviceType = old.DeviceType; device.Owner = old.Owner; device.Notes = old.Notes; device.IdentityMode = old.IdentityMode; device.ManagedBy = old.ManagedBy; device.IsNew = old.IsNew; } } }
+        foreach (var item in scanned.Where(d => !string.IsNullOrWhiteSpace(d.MacAddress)))
+        {
+            var released = previous.Values.FirstOrDefault(old => old.IpAddress == item.IpAddress
+                && old.IdentityMode == "Track by MAC"
+                && !string.IsNullOrWhiteSpace(old.MacAddress)
+                && !old.MacAddress.Equals(item.MacAddress, StringComparison.OrdinalIgnoreCase)
+                && !scanned.Any(current => current.MacAddress.Equals(old.MacAddress, StringComparison.OrdinalIgnoreCase)));
+            if (released is null) continue;
+            var oldIp = released.IpAddress;
+            released.IpAddress = "";
+            released.IsOnline = false;
+            offlineMisses.Remove(Key(released));
+            changes.Add(new() { OccurredUtc = now, DeviceKey = Key(released), Description = $"IP association released: {oldIp} is now used by {item.MacAddress}" });
+        }
+        foreach (var device in scanned)
+        {
+            var priorIp = previous.Values.FirstOrDefault(old => !string.IsNullOrWhiteSpace(device.MacAddress)
+                && old.MacAddress.Equals(device.MacAddress, StringComparison.OrdinalIgnoreCase)
+                && old.IpAddress != device.IpAddress);
+            if (priorIp is not null)
+            {
+                device.DisplayName = priorIp.DisplayName; device.DeviceType = priorIp.DeviceType;
+                device.Owner = priorIp.Owner; device.Notes = priorIp.Notes; device.FirstSeenUtc = priorIp.FirstSeenUtc;
+                device.IdentityMode = priorIp.IdentityMode; device.ManagedBy = priorIp.ManagedBy;
+                previous.Remove(Key(priorIp));
+            }
+
+            var alreadyKnown = previous.ContainsKey(Key(device));
+            var sameIpDifferentMac = alreadyKnown ? null : previous.Values.FirstOrDefault(old =>
+                old.IpAddress == device.IpAddress && old.IdentityMode == "Automatic"
+                && !string.IsNullOrWhiteSpace(old.MacAddress) && !string.IsNullOrWhiteSpace(device.MacAddress)
+                && !old.MacAddress.Equals(device.MacAddress, StringComparison.OrdinalIgnoreCase));
+            if (sameIpDifferentMac is not null)
+            {
+                sameIpDifferentMac.DisplayName = "Unknown device"; sameIpDifferentMac.DeviceType = "Unknown";
+                sameIpDifferentMac.Owner = ""; sameIpDifferentMac.Notes = ""; sameIpDifferentMac.IsOnline = false;
+                changes.Add(new() { OccurredUtc = now, DeviceKey = Key(device), Description = $"New device at {device.IpAddress}; previous MAC was {sameIpDifferentMac.MacAddress}" });
+                device.DisplayName = "Unknown device"; device.DeviceType = "Unknown"; device.Owner = ""; device.Notes = "";
+                device.IsNew = true; device.FirstSeenUtc = now; device.LastSeenUtc = now;
+            }
+            else
+            {
+                var key = Key(device); device.LastSeenUtc = now;
+                var old = previous.TryGetValue(key, out var exact) ? exact : priorIp ?? previous.Values.FirstOrDefault(candidate =>
+                    candidate.IpAddress == device.IpAddress && candidate.IdentityMode == "Track by IP");
+                if (old is null) changes.Add(new() { OccurredUtc = now, DeviceKey = key, Description = $"First seen: {device.IpAddress}" });
+                else
+                {
+                    if (!old.IsOnline) changes.Add(new() { OccurredUtc = now, DeviceKey = key, Description = $"Came online: {device.IpAddress}" });
+                    if (old.IpAddress != device.IpAddress)
+                    {
+                        var description = string.IsNullOrWhiteSpace(old.IpAddress)
+                            ? $"IP address assigned: {device.IpAddress}"
+                            : $"Device moved from {old.IpAddress} to {device.IpAddress}";
+                        changes.Add(new() { OccurredUtc = now, DeviceKey = key, Description = description });
+                    }
+                    if (!string.IsNullOrWhiteSpace(old.DetectedServices) && !string.IsNullOrWhiteSpace(device.DetectedServices) && old.DetectedServices != device.DetectedServices)
+                        changes.Add(new() { OccurredUtc = now, DeviceKey = key, Description = $"Services changed: {device.DetectedServices}" });
+                    device.DisplayName = old.DisplayName; device.DeviceType = old.DeviceType; device.Owner = old.Owner;
+                    device.Notes = old.Notes; device.IdentityMode = old.IdentityMode; device.ManagedBy = old.ManagedBy; device.IsNew = old.IsNew;
+                }
+            }
+        }
         var currentKeys = scanned.Select(Key).ToHashSet();
         foreach (var old in previous.Values)
         {

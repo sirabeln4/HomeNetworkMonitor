@@ -4,6 +4,7 @@ public sealed class NetworkDevice
 {
     public string MacAddress { get; set; } = "";
     public string IpAddress { get; set; } = "";
+    public string IpAddressDisplay => string.IsNullOrWhiteSpace(IpAddress) ? "Unassigned" : IpAddress;
     public string Hostname { get; set; } = "";
     public string Manufacturer { get; set; } = "Unknown";
     public string DisplayName { get; set; } = "Unknown device";
