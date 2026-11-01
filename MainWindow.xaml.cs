@@ -160,12 +160,13 @@ public partial class MainWindow : Window
 
     private static bool IsLikelyWslOrHyperVDevice(NetworkDevice device)
     {
+        var compactMac = new string(device.MacAddress.Where(Uri.IsHexDigit).ToArray());
+        var virtualMac = compactMac.StartsWith("00155D", StringComparison.OrdinalIgnoreCase);
+        if (string.IsNullOrWhiteSpace(device.IpAddress) && virtualMac) return true;
         if (!System.Net.IPAddress.TryParse(device.IpAddress, out var address)) return false;
         var bytes = address.GetAddressBytes();
         if (bytes.Length != 4 || bytes[0] != 172 || bytes[1] < 16 || bytes[1] > 31) return false;
         if (bytes[0] == 172 && bytes[1] == 31 && bytes[2] == 0 && bytes[3] == 1) return true;
-        var compactMac = new string(device.MacAddress.Where(Uri.IsHexDigit).ToArray());
-        var virtualMac = compactMac.StartsWith("00155D", StringComparison.OrdinalIgnoreCase);
         var virtualDescription = $"{device.Hostname} {device.DisplayName} {device.Manufacturer}";
         var virtualName = virtualDescription.Contains("WSL", StringComparison.OrdinalIgnoreCase)
             || virtualDescription.Contains("Hyper-V", StringComparison.OrdinalIgnoreCase)

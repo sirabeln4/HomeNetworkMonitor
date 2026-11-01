@@ -70,13 +70,13 @@ public sealed class NetworkScanner : INetworkScanner
         // communicated with, including devices that do not answer ICMP ping.
         try
         {
-            using var process = Process.Start(new ProcessStartInfo("arp", "-a")
+            using var process = Process.Start(new ProcessStartInfo("arp", $"-a -N {address}")
             {
                 RedirectStandardOutput = true, UseShellExecute = false, CreateNoWindow = true
             });
             if (process is not null)
             {
-                Log("Running: arp -a");
+                Log($"Running: arp -a -N {address}");
                 var output = await process.StandardOutput.ReadToEndAsync(cancellationToken);
                 await process.WaitForExitAsync(cancellationToken);
                 Log($"ARP command exit code: {process.ExitCode}; output length: {output.Length}.");
@@ -96,6 +96,23 @@ public sealed class NetworkScanner : INetworkScanner
             }
         }
         catch (Exception ex) { Log($"ARP phase failed: {ex.GetType().Name}: {ex.Message}"); }
+
+        // ARP usually does not contain the computer's own adapter. Read its MAC directly.
+        var localMacBytes = local!.GetPhysicalAddress().GetAddressBytes();
+        if (localMacBytes.Length == 6 && localMacBytes.Any(b => b != 0))
+        {
+            var localMac = string.Join(":", localMacBytes.Select(b => b.ToString("X2")));
+            var localDevice = found.FirstOrDefault(d => d.IpAddress == address.ToString());
+            if (localDevice is null)
+            {
+                localDevice = new NetworkDevice { IpAddress = address.ToString(), Hostname = Dns.GetHostName(), DisplayName = address.ToString(), IsOnline = true };
+                found.Add(localDevice);
+            }
+            localDevice.MacAddress = localMac;
+            localDevice.Manufacturer = ManufacturerFor(localMac);
+            localDevice.IsLocalAdapter = true;
+            Log($"Local adapter MAC: {localMac}.");
+        }
 
         // The default gateway should always be represented even if it hides ICMP.
         if (!found.Any(d => d.IpAddress == gateway.ToString()))

@@ -11,11 +11,12 @@ public sealed class DeviceRepository
     private readonly Dictionary<string, int> offlineMisses = new();
     private const int OfflineScanThreshold = 3;
 
-    public DeviceRepository()
+    public DeviceRepository() : this(Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "HomeNetworkMonitor", "network-monitor.db")) { }
+
+    public DeviceRepository(string databasePath)
     {
-        var folder = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "HomeNetworkMonitor");
-        Directory.CreateDirectory(folder);
-        connectionString = $"Data Source={Path.Combine(folder, "network-monitor.db")}";
+        Directory.CreateDirectory(Path.GetDirectoryName(Path.GetFullPath(databasePath))!);
+        connectionString = new SqliteConnectionStringBuilder { DataSource = databasePath }.ToString();
         using var connection = Open();
         using var command = connection.CreateCommand();
         command.CommandText = """
@@ -72,7 +73,7 @@ public sealed class DeviceRepository
         }).ToList();
     }
 
-    public void Save(IEnumerable<NetworkDevice> devices)
+    public void Save(IEnumerable<NetworkDevice> devices, IEnumerable<string>? migratedLocalIps = null)
     {
         using var connection = Open(); using var transaction = connection.BeginTransaction();
         foreach (var device in devices)
@@ -91,6 +92,17 @@ public sealed class DeviceRepository
             command.Parameters.AddWithValue("$new", device.IsNew ? 1 : 0); command.Parameters.AddWithValue("$first", device.FirstSeenUtc.ToString("O"));
             command.Parameters.AddWithValue("$last", device.LastSeenUtc.ToString("O")); command.Parameters.AddWithValue("$notes", device.Notes);
             command.Parameters.AddWithValue("$services", device.DetectedServices); command.Parameters.AddWithValue("$identity", device.IdentityMode); command.Parameters.AddWithValue("$managedBy", device.ManagedBy); command.ExecuteNonQuery();
+        }
+        if (migratedLocalIps is not null)
+        {
+            foreach (var ip in migratedLocalIps)
+            {
+                using var remove = connection.CreateCommand(); remove.Transaction = transaction;
+                remove.CommandText = "DELETE FROM Devices WHERE DeviceKey = $key AND IpAddress = $ip AND MacAddress = ''";
+                remove.Parameters.AddWithValue("$key", $"ip:{ip}");
+                remove.Parameters.AddWithValue("$ip", ip);
+                remove.ExecuteNonQuery();
+            }
         }
         transaction.Commit();
     }
@@ -130,6 +142,7 @@ public sealed class DeviceRepository
     public List<DeviceChange> RecordScan(IReadOnlyList<NetworkDevice> scanned)
     {
         var previous = LoadAll(deduplicateByIp: false).ToDictionary(Key); var now = DateTime.UtcNow; var changes = new List<DeviceChange>();
+        var migratedLocalIps = new List<string>();
         foreach (var item in scanned.Where(d => !string.IsNullOrWhiteSpace(d.MacAddress)))
         {
             var oldAtIp = previous.Values.FirstOrDefault(old => old.IpAddress == item.IpAddress && !string.IsNullOrWhiteSpace(old.MacAddress) && !old.MacAddress.Equals(item.MacAddress, StringComparison.OrdinalIgnoreCase));
@@ -152,6 +165,20 @@ public sealed class DeviceRepository
         }
         foreach (var device in scanned)
         {
+            NetworkDevice? legacyLocal = null;
+            if (device.IsLocalAdapter && !string.IsNullOrWhiteSpace(device.MacAddress)
+                && !previous.Values.Any(old => old.MacAddress.Equals(device.MacAddress, StringComparison.OrdinalIgnoreCase))
+                && !previous.Values.Any(old => old.IpAddress == device.IpAddress && !string.IsNullOrWhiteSpace(old.MacAddress)))
+            {
+                legacyLocal = previous.Values.FirstOrDefault(old => old.IpAddress == device.IpAddress && string.IsNullOrWhiteSpace(old.MacAddress));
+                if (legacyLocal is not null)
+                {
+                    previous.Remove(Key(legacyLocal));
+                    offlineMisses.Remove(Key(legacyLocal));
+                    migratedLocalIps.Add(device.IpAddress);
+                    changes.Add(new() { OccurredUtc = now, DeviceKey = Key(device), Description = $"Local adapter MAC identified at {device.IpAddress}: {device.MacAddress}" });
+                }
+            }
             var priorIp = previous.Values.FirstOrDefault(old => !string.IsNullOrWhiteSpace(device.MacAddress)
                 && old.MacAddress.Equals(device.MacAddress, StringComparison.OrdinalIgnoreCase)
                 && old.IpAddress != device.IpAddress);
@@ -159,27 +186,46 @@ public sealed class DeviceRepository
             {
                 device.DisplayName = priorIp.DisplayName; device.DeviceType = priorIp.DeviceType;
                 device.Owner = priorIp.Owner; device.Notes = priorIp.Notes; device.FirstSeenUtc = priorIp.FirstSeenUtc;
-                device.IdentityMode = priorIp.IdentityMode; device.ManagedBy = priorIp.ManagedBy;
+                device.IdentityMode = priorIp.IdentityMode; device.ManagedBy = priorIp.ManagedBy; device.IsNew = priorIp.IsNew;
                 previous.Remove(Key(priorIp));
             }
 
             var alreadyKnown = previous.ContainsKey(Key(device));
+            var knownDeviceByMac = alreadyKnown || priorIp is not null;
             var sameIpDifferentMac = alreadyKnown ? null : previous.Values.FirstOrDefault(old =>
                 old.IpAddress == device.IpAddress && old.IdentityMode == "Automatic"
                 && !string.IsNullOrWhiteSpace(old.MacAddress) && !string.IsNullOrWhiteSpace(device.MacAddress)
                 && !old.MacAddress.Equals(device.MacAddress, StringComparison.OrdinalIgnoreCase));
             if (sameIpDifferentMac is not null)
             {
+                var occupiedIp = sameIpDifferentMac.IpAddress;
+                var previousMac = sameIpDifferentMac.MacAddress;
                 sameIpDifferentMac.DisplayName = "Unknown device"; sameIpDifferentMac.DeviceType = "Unknown";
-                sameIpDifferentMac.Owner = ""; sameIpDifferentMac.Notes = ""; sameIpDifferentMac.IsOnline = false;
-                changes.Add(new() { OccurredUtc = now, DeviceKey = Key(device), Description = $"New device at {device.IpAddress}; previous MAC was {sameIpDifferentMac.MacAddress}" });
-                device.DisplayName = "Unknown device"; device.DeviceType = "Unknown"; device.Owner = ""; device.Notes = "";
-                device.IsNew = true; device.FirstSeenUtc = now; device.LastSeenUtc = now;
+                sameIpDifferentMac.Owner = ""; sameIpDifferentMac.Notes = ""; sameIpDifferentMac.IsOnline = false; sameIpDifferentMac.IpAddress = "";
+                changes.Add(new() { OccurredUtc = now, DeviceKey = Key(sameIpDifferentMac), Description = $"IP association released: {occupiedIp} is now used by {device.MacAddress}" });
+                if (knownDeviceByMac)
+                {
+                    if (priorIp is not null && !priorIp.IsOnline)
+                        changes.Add(new() { OccurredUtc = now, DeviceKey = Key(device), Description = $"Came online: {device.IpAddress}" });
+                    var movement = priorIp is null
+                        ? $"Known device {device.DisplayName} is at {device.IpAddress}"
+                        : string.IsNullOrWhiteSpace(priorIp.IpAddress)
+                            ? $"Known device {device.DisplayName} was assigned {device.IpAddress}"
+                            : $"Known device {device.DisplayName} moved from {priorIp.IpAddress} to {device.IpAddress}";
+                    changes.Add(new() { OccurredUtc = now, DeviceKey = Key(device), Description = $"{movement}; previous occupant MAC was {previousMac}" });
+                    device.LastSeenUtc = now;
+                }
+                else
+                {
+                    changes.Add(new() { OccurredUtc = now, DeviceKey = Key(device), Description = $"New device at {device.IpAddress}; previous MAC was {previousMac}" });
+                    device.DisplayName = "Unknown device"; device.DeviceType = "Unknown"; device.Owner = ""; device.Notes = "";
+                    device.IsNew = true; device.FirstSeenUtc = now; device.LastSeenUtc = now;
+                }
             }
             else
             {
                 var key = Key(device); device.LastSeenUtc = now;
-                var old = previous.TryGetValue(key, out var exact) ? exact : priorIp ?? previous.Values.FirstOrDefault(candidate =>
+                var old = previous.TryGetValue(key, out var exact) ? exact : priorIp ?? legacyLocal ?? previous.Values.FirstOrDefault(candidate =>
                     candidate.IpAddress == device.IpAddress && candidate.IdentityMode == "Track by IP");
                 if (old is null) changes.Add(new() { OccurredUtc = now, DeviceKey = key, Description = $"First seen: {device.IpAddress}" });
                 else
@@ -196,6 +242,7 @@ public sealed class DeviceRepository
                         changes.Add(new() { OccurredUtc = now, DeviceKey = key, Description = $"Services changed: {device.DetectedServices}" });
                     device.DisplayName = old.DisplayName; device.DeviceType = old.DeviceType; device.Owner = old.Owner;
                     device.Notes = old.Notes; device.IdentityMode = old.IdentityMode; device.ManagedBy = old.ManagedBy; device.IsNew = old.IsNew;
+                    device.FirstSeenUtc = old.FirstSeenUtc;
                 }
             }
         }
@@ -213,7 +260,7 @@ public sealed class DeviceRepository
             }
             scanned = scanned.Append(old).ToList();
         }
-        Save(scanned); using var connection = Open(); using var tx = connection.BeginTransaction(); using var scan = connection.CreateCommand(); scan.Transaction = tx; scan.CommandText = "INSERT INTO ScanHistory(OccurredUtc,DeviceCount) VALUES($time,$count)"; scan.Parameters.AddWithValue("$time", now.ToString("O")); scan.Parameters.AddWithValue("$count", scanned.Count(d => d.IsOnline)); scan.ExecuteNonQuery();
+        Save(scanned, migratedLocalIps); using var connection = Open(); using var tx = connection.BeginTransaction(); using var scan = connection.CreateCommand(); scan.Transaction = tx; scan.CommandText = "INSERT INTO ScanHistory(OccurredUtc,DeviceCount) VALUES($time,$count)"; scan.Parameters.AddWithValue("$time", now.ToString("O")); scan.Parameters.AddWithValue("$count", scanned.Count(d => d.IsOnline)); scan.ExecuteNonQuery();
         foreach (var change in changes) { var device = scanned.FirstOrDefault(d => Key(d) == change.DeviceKey) ?? previous.Values.FirstOrDefault(d => Key(d) == change.DeviceKey); using var item = connection.CreateCommand(); item.Transaction = tx; item.CommandText = "INSERT INTO DeviceChanges(OccurredUtc,DeviceKey,Description,IpAddress,MacAddress,DeviceName) VALUES($time,$key,$description,$ip,$mac,$name)"; item.Parameters.AddWithValue("$time", change.OccurredUtc.ToString("O")); item.Parameters.AddWithValue("$key", change.DeviceKey); item.Parameters.AddWithValue("$description", change.Description); item.Parameters.AddWithValue("$ip", device?.IpAddress ?? ""); item.Parameters.AddWithValue("$mac", device?.MacAddress ?? ""); item.Parameters.AddWithValue("$name", device?.DisplayName ?? ""); item.ExecuteNonQuery(); } tx.Commit(); return changes;
     }
 
