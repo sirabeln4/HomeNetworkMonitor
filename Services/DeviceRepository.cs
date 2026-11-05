@@ -37,7 +37,6 @@ public sealed class DeviceRepository
         try { using var migrate = connection.CreateCommand(); migrate.CommandText = "ALTER TABLE DeviceChanges ADD COLUMN IpAddress TEXT NOT NULL DEFAULT ''"; migrate.ExecuteNonQuery(); } catch (SqliteException) { }
         try { using var migrate = connection.CreateCommand(); migrate.CommandText = "ALTER TABLE DeviceChanges ADD COLUMN MacAddress TEXT NOT NULL DEFAULT ''"; migrate.ExecuteNonQuery(); } catch (SqliteException) { }
         try { using var migrate = connection.CreateCommand(); migrate.CommandText = "ALTER TABLE DeviceChanges ADD COLUMN DeviceName TEXT NOT NULL DEFAULT ''"; migrate.ExecuteNonQuery(); } catch (SqliteException) { }
-        using var cleanup = connection.CreateCommand(); cleanup.CommandText = "DELETE FROM Devices AS old WHERE old.MacAddress = '' AND EXISTS (SELECT 1 FROM Devices AS newer WHERE newer.IpAddress = old.IpAddress AND newer.MacAddress <> '')"; cleanup.ExecuteNonQuery();
         using var broadcastCleanup = connection.CreateCommand(); broadcastCleanup.CommandText = "DELETE FROM Devices WHERE IpAddress = '255.255.255.255' OR IpAddress LIKE '%.255'"; broadcastCleanup.ExecuteNonQuery();
         using var historyCleanup = connection.CreateCommand(); historyCleanup.CommandText = "DELETE FROM DeviceChanges WHERE Description LIKE 'First seen: 255.255.255.255%' OR Description LIKE 'Services changed: HTTP (80)%'"; historyCleanup.ExecuteNonQuery();
         using var duplicateEventCleanup = connection.CreateCommand(); duplicateEventCleanup.CommandText = "DELETE FROM DeviceChanges WHERE Description LIKE 'New device at %; previous MAC was %' AND Id NOT IN (SELECT MIN(Id) FROM DeviceChanges WHERE Description LIKE 'New device at %; previous MAC was %' GROUP BY DeviceKey, Description)"; duplicateEventCleanup.ExecuteNonQuery();
@@ -58,18 +57,13 @@ public sealed class DeviceRepository
             Notes = reader.GetString(11), DetectedServices = reader.GetString(12), IdentityMode = reader.GetString(13), ManagedBy = reader.GetString(14)
         });
         if (!deduplicateByIp) return result;
-        return result.Where(d => !d.IpAddress.EndsWith(".255", StringComparison.Ordinal) && d.IpAddress != "255.255.255.255").GroupBy(d => string.IsNullOrWhiteSpace(d.IpAddress) ? Key(d) : d.IpAddress).Select(group =>
+        return result.Where(d => !d.IpAddress.EndsWith(".255", StringComparison.Ordinal) && d.IpAddress != "255.255.255.255").GroupBy(d => string.IsNullOrWhiteSpace(d.IpAddress) ? Key(d) : d.IpAddress).SelectMany(group =>
         {
-            var preferred = group.OrderByDescending(d => d.IsOnline).ThenByDescending(d => !string.IsNullOrWhiteSpace(d.MacAddress)).First();
-            foreach (var duplicate in group.Where(d => !ReferenceEquals(d, preferred)))
-            {
-                if (string.IsNullOrWhiteSpace(preferred.MacAddress)) preferred.MacAddress = duplicate.MacAddress;
-                if (preferred.Manufacturer.StartsWith("Unknown")) preferred.Manufacturer = duplicate.Manufacturer;
-                preferred.FirstSeenUtc = preferred.FirstSeenUtc < duplicate.FirstSeenUtc ? preferred.FirstSeenUtc : duplicate.FirstSeenUtc;
-                preferred.LastSeenUtc = preferred.LastSeenUtc > duplicate.LastSeenUtc ? preferred.LastSeenUtc : duplicate.LastSeenUtc;
-                preferred.IsOnline |= duplicate.IsOnline;
-            }
-            return preferred;
+            var unconfirmedOnline = group.FirstOrDefault(d => d.IsOnline && string.IsNullOrWhiteSpace(d.MacAddress));
+            if (unconfirmedOnline is not null && group.Any(d => !string.IsNullOrWhiteSpace(d.MacAddress)))
+                return group.Where(d => ReferenceEquals(d, unconfirmedOnline) || !string.IsNullOrWhiteSpace(d.MacAddress));
+
+            return new[] { group.OrderByDescending(d => d.IsOnline).ThenByDescending(d => !string.IsNullOrWhiteSpace(d.MacAddress)).First() };
         }).ToList();
     }
 
@@ -111,8 +105,8 @@ public sealed class DeviceRepository
     {
         using var connection = Open();
         using var command = connection.CreateCommand();
-        command.CommandText = "DELETE FROM Devices WHERE DeviceKey = $key OR ($ip <> '' AND IpAddress = $ip)";
-        command.Parameters.AddWithValue("$key", Key(device)); command.Parameters.AddWithValue("$ip", device.IpAddress);
+        command.CommandText = "DELETE FROM Devices WHERE DeviceKey = $key";
+        command.Parameters.AddWithValue("$key", Key(device));
         command.ExecuteNonQuery();
     }
 
@@ -143,6 +137,10 @@ public sealed class DeviceRepository
     {
         var previous = LoadAll(deduplicateByIp: false).ToDictionary(Key); var now = DateTime.UtcNow; var changes = new List<DeviceChange>();
         var migratedLocalIps = new List<string>();
+        var observedMacsByIp = scanned
+            .Where(d => d.IsOnline && !string.IsNullOrWhiteSpace(d.IpAddress) && !string.IsNullOrWhiteSpace(d.MacAddress))
+            .GroupBy(d => d.IpAddress)
+            .ToDictionary(group => group.Key, group => group.Select(d => d.MacAddress).Distinct(StringComparer.OrdinalIgnoreCase).ToArray());
         foreach (var item in scanned.Where(d => !string.IsNullOrWhiteSpace(d.MacAddress)))
         {
             var oldAtIp = previous.Values.FirstOrDefault(old => old.IpAddress == item.IpAddress && !string.IsNullOrWhiteSpace(old.MacAddress) && !old.MacAddress.Equals(item.MacAddress, StringComparison.OrdinalIgnoreCase));
@@ -251,6 +249,19 @@ public sealed class DeviceRepository
         {
             var key = Key(old);
             if (currentKeys.Contains(key)) { offlineMisses.Remove(key); continue; }
+            if (string.IsNullOrWhiteSpace(old.MacAddress) && old.IdentityMode != "Track by IP"
+                && !string.IsNullOrWhiteSpace(old.IpAddress) && old.LastSeenUtc.ToUniversalTime() <= now
+                && observedMacsByIp.TryGetValue(old.IpAddress, out var observedMacs) && observedMacs.Length == 1)
+            {
+                if (old.IsOnline)
+                {
+                    old.IsOnline = false;
+                    changes.Add(new() { OccurredUtc = now, DeviceKey = key, Description = $"IP-only observation superseded at {old.IpAddress}; scan found MAC {observedMacs[0]}" });
+                }
+                offlineMisses.Remove(key);
+                scanned = scanned.Append(old).ToList();
+                continue;
+            }
             var misses = offlineMisses.TryGetValue(key, out var count) ? count + 1 : 1;
             offlineMisses[key] = misses;
             if (old.IsOnline && misses >= OfflineScanThreshold)

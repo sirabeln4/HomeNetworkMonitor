@@ -1,7 +1,7 @@
 <Window x:Class="NetworkMonitor.MainWindow" xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation" xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml" Title="Home Network Monitor" Height="650" Width="1050" WindowStartupLocation="CenterScreen">
   <DockPanel Margin="18">
     <StackPanel DockPanel.Dock="Top">
-      <StackPanel Orientation="Horizontal"><TextBlock Text="Home Network Monitor" FontSize="28" FontWeight="Bold"/><TextBlock Text="  v0.9.50" Foreground="Gray" VerticalAlignment="Bottom" Margin="12,0,0,7"/></StackPanel>
+      <StackPanel Orientation="Horizontal"><TextBlock Text="Home Network Monitor" FontSize="28" FontWeight="Bold"/><TextBlock Text="  v0.9.52" Foreground="Gray" VerticalAlignment="Bottom" Margin="12,0,0,7"/></StackPanel>
       <TextBlock Text="Nest Wifi Pro network • light monitoring every 15 minutes" Foreground="Gray"/>
       <UniformGrid Columns="4" Margin="0,18,0,12">
         <Border Background="#E8F1FF" Padding="12" Margin="4"><StackPanel><TextBlock Text="Total devices"/><TextBlock x:Name="TotalText" Text="0" FontSize="25" FontWeight="Bold"/></StackPanel></Border>
